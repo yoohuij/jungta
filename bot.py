@@ -375,6 +375,10 @@ def can_manage(interaction: discord.Interaction) -> bool:
     return isinstance(member, discord.Member) and member.guild_permissions.manage_guild
 
 
+def can_review_meeting(interaction: discord.Interaction) -> bool:
+    return can_manage(interaction) or can_use_notice_admin(interaction) or deputy_feature.allows(interaction)
+
+
 def can_use_notice_admin(interaction: discord.Interaction) -> bool:
     """봇 소유자, 서버 소유자 또는 지정된 공지 관리자만 공지 기능을 사용합니다."""
     return (
@@ -1103,7 +1107,7 @@ async def approved_absence_list(interaction: discord.Interaction) -> None:
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
-    if not can_manage(interaction):
+    if not can_review_meeting(interaction):
         await interaction.response.send_message("서버 관리 권한이 필요합니다.", ephemeral=True)
         return
     pages = make_absence_pages(get_approved_absences(interaction.guild.id))
@@ -1127,7 +1131,7 @@ async def check_absence_reason(interaction: discord.Interaction, 유저: discord
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
-    if not can_manage(interaction):
+    if not can_review_meeting(interaction):
         await interaction.response.send_message("서버 관리 권한이 필요합니다.", ephemeral=True)
         return
     reason = get_approved_absence(interaction.guild.id, 유저.id)
@@ -1145,7 +1149,7 @@ async def check_meeting_non_participants(interaction: discord.Interaction) -> No
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
-    if not can_manage(interaction):
+    if not can_review_meeting(interaction):
         await interaction.response.send_message("서버 관리 권한이 필요합니다.", ephemeral=True)
         return
     meeting_channel_id = get_meeting_settings(interaction.guild.id).meeting_channel_id
@@ -1163,6 +1167,8 @@ async def check_meeting_non_participants(interaction: discord.Interaction) -> No
         "등록된 불참자를 제외한 모든 대상자가 회의방에 참여 중입니다.",
         "회의방 참여 부탁드립니다.",
     )
+    if not (can_manage(interaction) or can_use_notice_admin(interaction)):
+        view.remove_item(view.mention)
     await interaction.followup.send(embed=view.embed(), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -1236,7 +1242,7 @@ async def check_idle_members(interaction: discord.Interaction, 메시지_id: str
     if interaction.guild is None or interaction.channel is None:
         await interaction.response.send_message("서버 채널에서만 사용할 수 있습니다.", ephemeral=True)
         return
-    if not can_manage(interaction):
+    if not can_review_meeting(interaction):
         await interaction.response.send_message("서버 관리 권한이 필요합니다.", ephemeral=True)
         return
     meeting_channel_id = get_meeting_settings(interaction.guild.id).meeting_channel_id
@@ -1273,6 +1279,8 @@ async def check_idle_members(interaction: discord.Interaction, 메시지_id: str
         "반응 확인 부탁드립니다.",
         refresh_members=refresh_members,
     )
+    if not (can_manage(interaction) or can_use_notice_admin(interaction)):
+        view.remove_item(view.mention)
     await interaction.followup.send(embed=view.embed(), view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -1814,6 +1822,9 @@ bot.tree.add_command(admin_group)
 
 import donations
 donation_feature = donations.install(bot, database)
+
+import deputies
+deputy_feature = deputies.install(bot, database, is_bot_administrator)
 
 # Discord requires a non-empty description for slash commands and their options.
 for command in bot.tree.walk_commands():
