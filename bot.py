@@ -341,6 +341,8 @@ def set_manual_absence(guild_id: int, user_id: int, owner_id: int, adding: bool)
 
 def is_bot_administrator(guild_id: int, user_id: int) -> bool:
     """서버 ID는 기존 호출 호환용이며, 권한은 봇 전체 명단에서 조회합니다."""
+    if is_suspended(user_id):
+        return False
     with database() as connection:
         row = connection.execute(
             "SELECT 1 FROM global_administrators WHERE user_id = ?",
@@ -371,17 +373,28 @@ def get_bot_administrator_ids(guild_id: int) -> list[int]:
     return [row[0] for row in rows]
 
 
+def is_suspended(user_id: int) -> bool:
+    feature = globals().get("antiraid_feature")
+    return feature is not None and feature.blocked(user_id)
+
+
 def can_manage(interaction: discord.Interaction) -> bool:
+    if is_suspended(interaction.user.id):
+        return False
     member = interaction.user
     return isinstance(member, discord.Member) and member.guild_permissions.manage_guild
 
 
 def can_review_meeting(interaction: discord.Interaction) -> bool:
+    if is_suspended(interaction.user.id):
+        return False
     return can_manage(interaction) or can_use_notice_admin(interaction) or deputy_feature.allows(interaction)
 
 
 def can_use_notice_admin(interaction: discord.Interaction) -> bool:
     """봇 소유자, 서버 소유자 또는 지정된 공지 관리자만 공지 기능을 사용합니다."""
+    if is_suspended(interaction.user.id):
+        return False
     return (
         interaction.guild is not None
         and (
@@ -521,6 +534,9 @@ class ResultView(discord.ui.View):
         self.update_buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_suspended(interaction.user.id):
+            await interaction.response.send_message("봇 권한이 임시 정지되었습니다.", ephemeral=True)
+            return False
         if interaction.user.id == self.owner_id or can_manage(interaction):
             return True
         await interaction.response.send_message("명령어를 실행한 사람 또는 서버 관리 권한자만 사용할 수 있습니다.", ephemeral=True)
@@ -656,6 +672,9 @@ class MemberResultView(discord.ui.View):
         self.update_buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_suspended(interaction.user.id):
+            await interaction.response.send_message("봇 권한이 임시 정지되었습니다.", ephemeral=True)
+            return False
         if interaction.user.id == self.owner_id or can_manage(interaction):
             return True
         await interaction.response.send_message("명령어를 실행한 사람 또는 서버 관리 권한자만 사용할 수 있습니다.", ephemeral=True)
@@ -910,6 +929,7 @@ class AttendanceBot(discord.Client):
         intents = discord.Intents.default()
         intents.members = True
         intents.voice_states = True
+        intents.moderation = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.application_owner_id: int | None = None
@@ -917,6 +937,7 @@ class AttendanceBot(discord.Client):
     async def setup_hook(self) -> None:
         app_info = await self.application_info()
         self.application_owner_id = app_info.owner.id
+        antiraid_feature.restore_views()
         self.add_view(AbsenceApplyView())
         self.add_view(MeetingEndView())
         self.add_view(MeetingAnnouncementView())
@@ -1538,6 +1559,8 @@ def warning_role(guild: discord.Guild) -> discord.Role:
 
 
 def can_warn(interaction: discord.Interaction) -> bool:
+    if is_suspended(interaction.user.id):
+        return False
     return is_owner(interaction) or (
         isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_roles
     )
@@ -1606,6 +1629,9 @@ class WarningListView(discord.ui.View):
         return embed
 
     async def interaction_check(self, interaction):
+        if is_suspended(interaction.user.id):
+            await interaction.response.send_message("봇 권한이 임시 정지되었습니다.", ephemeral=True)
+            return False
         if interaction.user.id == self.owner_id:
             return True
         await interaction.response.send_message("목록을 조회한 사람만 사용할 수 있습니다.", ephemeral=True)
@@ -1820,7 +1846,22 @@ async def end_meeting(interaction: discord.Interaction) -> None:
 
 
 @bot.event
+async def on_guild_role_update(before: discord.Role, after: discord.Role):
+    await antiraid_feature.role_changed(after)
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    await antiraid_feature.enforce(after)
+    if is_suspended(after.id):
+        return
+
+
+@bot.event
 async def on_member_join(member: discord.Member):
+    await antiraid_feature.enforce(member)
+    if is_suspended(member.id):
+        return
     if member.guild.id in donation_feature.role_guilds():
         async with donation_feature.lock:
             try:
@@ -1843,6 +1884,9 @@ async def on_ready():
 
 bot.tree.add_command(meeting_group)
 bot.tree.add_command(admin_group)
+
+import antiraid
+antiraid_feature = antiraid.install(bot, database, is_owner)
 
 import meeting_chat
 meeting_chat_feature = meeting_chat.install(bot, database, is_owner, get_meeting_settings)
